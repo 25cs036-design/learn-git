@@ -1,0 +1,7 @@
+#include<iostream.h>
+using namespace std;
+int main()
+{
+cout<<"the nature is looking good ";
+return 0;
+}
