@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ta">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Pirai Thedum Iraviley — Song Display</title>
+  <style>
+    body{font-family: system-ui, -apple-system, 'Noto Sans Tamil', Roboto, sans-serif; background:#0b1020; color:#e6eef8; margin:0; padding:24px;}
+    .card{max-width:900px;margin:20px auto;padding:18px;border-radius:12px;background:linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));box-shadow:0 8px 30px rgba(2,6,23,0.6);} 
+    h1{margin:0 0 6px 0;font-size:22px}
+    .meta{opacity:0.8;margin-bottom:14px}
+    .controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+    .btn{background:#1e90ff;border:none;padding:8px 12px;border-radius:8px;color:white;cursor:pointer}
+    .btn:disabled{opacity:0.5}
+    .filedrop{margin-top:12px;padding:12px;border:2px dashed rgba(255,255,255,0.06);border-radius:10px;text-align:center}
+    textarea{width:100%;height:140px;border-radius:8px;padding:10px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+    .lyrics{height:280px;overflow:auto;padding:12px;border-radius:8px;background:linear-gradient(180deg, rgba(0,0,0,0.18), rgba(255,255,255,0.01));}
+    .line{padding:6px 4px;font-size:16px;opacity:0.8}
+    .line.active{background:linear-gradient(90deg, rgba(30,144,255,0.12), rgba(30,144,255,0.04));opacity:1;border-radius:6px}
+    .small{font-size:13px;color:#a8c2df}
+    footer{opacity:0.7;margin-top:12px;font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>"Pirai Thedum Iraviley" — Song display (demo)</h1>
+    <div class="meta small">Machan: audio file provide panni, lyrics paste pannu. LRC format support irukku (timestamps) — or plain lines.</div>
+
+    <div class="controls">
+      <button class="btn" id="playBtn" disabled>Play</button>
+      <button class="btn" id="pauseBtn" disabled>Pause</button>
+      <label class="btn" id="loadLocal">Choose audio</label>
+      <input id="audioFile" type="file" accept="audio/*" style="display:none" />
+      <input id="audioUrl" placeholder="Or paste audio URL and press Load" style="flex:1;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit" />
+      <button class="btn" id="loadUrlBtn">Load</button>
+    </div>
+
+    <div class="filedrop" id="dropArea">Or drag & drop an audio file here</div>
+
+    <audio id="player" controls style="width:100%;margin-top:12px;display:none"></audio>
+
+    <div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div>
+        <label class="small">Paste lyrics (plain lines or LRC with timestamps):</label>
+        <textarea id="lyricsInput" placeholder="Paste lyrics or LRC here. Example LRC line: [00:32.50] Pongum ennalum... (paste your own lyrics)"></textarea>
+        <div style="margin-top:8px;display:flex;gap:8px;"><button class="btn" id="loadLyrics">Load Lyrics</button><button class="btn" id="clearLyrics">Clear</button></div>
+      </div>
+
+      <div>
+        <label class="small">Lyrics display</label>
+        <div class="lyrics" id="lyricsDisplay"></div>
+      </div>
+    </div>
+
+    <footer>Note: Copyrighted lyrics are not provided. Paste your own lyrics to display. For automatic fetching we need a lyrics API or permission.</footer>
+  </div>
+
+<script>
+// Helper: parse LRC or plain lyrics into {time, text} lines. Time in seconds or null for plain.
+function parseLyrics(raw) {
+  const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const parsed = [];
+  const timeRegex = /\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/g;
+  for (const line of lines) {
+    // find all timestamps
+    let matches;
+    const times = [];
+    while ((matches = timeRegex.exec(line)) !== null) {
+      const m = matches;
+      const min = parseInt(m[1],10);
+      const sec = parseInt(m[2],10);
+      const ms = m[3] ? parseInt((m[3]+'00').slice(0,3),10) : 0;
+      const t = min*60 + sec + ms/1000;
+      times.push(t);
+    }
+    const text = line.replace(timeRegex, '').trim();
+    if (times.length) {
+      for (const t of times) parsed.push({time:t, text});
+    } else {
+      parsed.push({time:null, text});
+    }
+  }
+  // Sort by time where available, keep null-times at end in same order
+  const withTime = parsed.filter(l => l.time !== null).sort((a,b)=>a.time-b.time);
+  const noTime = parsed.filter(l => l.time === null);
+  return withTime.concat(noTime);
+}
+
+// UI references
+const player = document.getElementById('player');
+const playBtn = document.getElementById('playBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const audioFile = document.getElementById('audioFile');
+const loadLocal = document.getElementById('loadLocal');
+const audioUrl = document.getElementById('audioUrl');
+const loadUrlBtn = document.getElementById('loadUrlBtn');
+const dropArea = document.getElementById('dropArea');
+const lyricsInput = document.getElementById('lyricsInput');
+const loadLyrics = document.getElementById('loadLyrics');
+const clearLyrics = document.getElementById('clearLyrics');
+const lyricsDisplay = document.getElementById('lyricsDisplay');
+
+let lyrics = []; // {time|null, text}
+let activeIndex = -1;
+let plainMode = true;
+
+function enableControls(){ playBtn.disabled=false; pauseBtn.disabled=false; player.style.display='block'; }
+
+playBtn.addEventListener('click', ()=> player.play());
+pauseBtn.addEventListener('click', ()=> player.pause());
+
+loadLocal.addEventListener('click', ()=> audioFile.click());
+
+audioFile.addEventListener('change', (e)=>{
+  const file = e.target.files[0];
+  if(!file) return;
+  const url = URL.createObjectURL(file);
+  player.src = url;
+  enableControls();
+});
+
+loadUrlBtn.addEventListener('click', ()=>{
+  const url = audioUrl.value.trim();
+  if(!url) return alert('Please paste a valid audio URL.');
+  player.src = url;
+  enableControls();
+});
+
+// drag & drop
+['dragenter','dragover'].forEach(ev=>{
+  dropArea.addEventListener(ev, (e)=>{e.preventDefault(); e.stopPropagation(); dropArea.style.opacity=0.8});
+});
+['dragleave','drop'].forEach(ev=>{
+  dropArea.addEventListener(ev, (e)=>{e.preventDefault(); e.stopPropagation(); dropArea.style.opacity=1});
+});
+
+dropArea.addEventListener('drop', (e)=>{
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if(!f) return;
+  const url = URL.createObjectURL(f);
+  player.src = url;
+  enableControls();
+});
+
+// Lyrics load
+loadLyrics.addEventListener('click', ()=>{
+  const raw = lyricsInput.value.trim();
+  if(!raw) return alert('Paste lyrics or LRC first.');
+  lyrics = parseLyrics(raw);
+  renderLyrics();
+});
+clearLyrics.addEventListener('click', ()=>{ lyricsInput.value=''; lyrics=[]; renderLyrics(); });
+
+function renderLyrics(){
+  lyricsDisplay.innerHTML='';
+  lyrics.forEach((ln, i)=>{
+    const div = document.createElement('div');
+    div.className='line';
+    div.dataset.index = i;
+    div.textContent = ln.text || '';
+    if(ln.time !== null) {
+      const timeSpan = document.createElement('span');
+      timeSpan.style.opacity='0.6';
+      timeSpan.style.fontSize='13px';
+      timeSpan.textContent = ' ';
+      div.prepend(timeSpan);
+    }
+    lyricsDisplay.appendChild(div);
+  });
+  activeIndex = -1;
+}
+
+// Syncing: when audio time updates, find nearest lyric with time <= currentTime
+player.addEventListener('timeupdate', ()=>{
+  if(!lyrics || lyrics.length===0) return;
+  const t = player.currentTime;
+  // find last index with time <= t
+  let idx = -1;
+  for(let i=0;i<lyrics.length;i++){
+    if(lyrics[i].time===null) break;
+    if(lyrics[i].time <= t) idx = i;
+    else break;
+  }
+  if(idx !== activeIndex){
+    // update UI
+    const prev = lyricsDisplay.querySelector('.line.active');
+    if(prev) prev.classList.remove('active');
+    if(idx !== -1){
+      const node = lyricsDisplay.querySelector(`.line[data-index='${idx}']`);
+      if(node){ node.classList.add('active'); node.scrollIntoView({behavior:'smooth', block:'center'}); }
+    }
+    activeIndex = idx;
+  }
+});
+
+// If lyrics have no timestamps, highlight the currently clicked line when playing
+lyricsDisplay.addEventListener('click', (e)=>{
+  const line = e.target.closest('.line');
+  if(!line) return;
+  // remove old
+  const prev = lyricsDisplay.querySelector('.line.active'); if(prev) prev.classList.remove('active');
+  line.classList.add('active');
+  // if clicked line had a time, seek
+  const i = parseInt(line.dataset.index,10);
+  if(lyrics[i] && lyrics[i].time !== null){ player.currentTime = lyrics[i].time; }
+});
+
+// Small convenience: sample hint text into lyrics (short, non-copyrighted)
+// NOTE: we intentionally do NOT include full copyrighted lyrics in this demo.
+lyricsInput.placeholder = 'Paste your lyrics here (LRC or plain). This demo does not provide copyrighted lyrics.';
+
+</script>
+</body>
+</html>
